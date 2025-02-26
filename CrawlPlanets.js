@@ -443,17 +443,56 @@ function capturePlanets(fromId, minCaptureLevel, maxCaptureLevel, maxDistributeE
             continue;
         }
 
-        // Rejected if has pending arrivals
+        // 获取所有前往该行星的舰队
         const arrivals = getArrivalsForPlanet(candidate.locationId);
-        if (arrivals.length !== 0) {
-            continue;
+        
+        // 计算该行星需要的能量
+        const energyForCandidate = minimumEnergyAllowed === 0 ? 1 : candidate.energyCap * minimumEnergyAllowed / 100;
+        const energyNeededToCapture = energyForCandidate + (candidate.energy * (candidate.defense / 100));
+        
+        // 计算已有舰队携带的能量总和
+        let incomingEnergy = 0;
+        let alreadyBeingCaptured = false;
+        
+        // 检查所有正在前往的舰队
+        if (arrivals.length > 0) {
+            for (const arrival of arrivals) {
+                // 只计算我方舰队的能量
+                if (arrival.fromPlanet && df.getPlanetWithId(arrival.fromPlanet).owner === df.account) {
+                    incomingEnergy += arrival.energyArriving;
+                    
+                    // 如果已有舰队能量足够占领，则跳过该行星
+                    if (incomingEnergy >= energyNeededToCapture) {
+                        alreadyBeingCaptured = true;
+                        break;
+                    }
+                }
+            }
+            
+            // 如果已经有足够能量前往攻击，跳过这个目标
+            if (alreadyBeingCaptured) {
+                continue;
+            }
+            
+            // 如果有敌方舰队，也跳过这个目标
+            const hasEnemyArrivals = arrivals.some(arrival => {
+                const fromPlanet = arrival.fromPlanet ? df.getPlanetWithId(arrival.fromPlanet) : null;
+                return fromPlanet && fromPlanet.owner !== df.account;
+            });
+            
+            if (hasEnemyArrivals) {
+                continue;
+            }
         }
 
-        // set minimum above energy to % or 1 (if 0%), depending on minimumEnergyAllowed value
-        const energyForCandidate = minimumEnergyAllowed === 0 ? 1 : candidate.energyCap * minimumEnergyAllowed / 100
-        const energyArriving = energyForCandidate + (candidate.energy * (candidate.defense / 100));
-        // needs to be a whole number for the contract
-        const energyNeeded = Math.ceil(df.getEnergyNeededForMove(fromId, candidate.locationId, energyArriving));
+        // 计算还需要的额外能量
+        let energyStillNeeded = energyNeededToCapture - incomingEnergy;
+        if (energyStillNeeded <= 0) {
+            continue; // 已经有足够的能量前往
+        }
+        
+        // 计算从当前行星发送所需的能量
+        const energyNeeded = Math.ceil(df.getEnergyNeededForMove(fromId, candidate.locationId, energyStillNeeded));
         if (energyLeft - energyNeeded < 0) {
             continue;
         }
