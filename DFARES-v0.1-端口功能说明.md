@@ -75,6 +75,13 @@
   - 提供游戏使用的图片资源
   - 支持UI和视觉元素
 
+### 远程挖矿服务
+- **URL**: `http://0.0.0.0:8000/mine`
+- **参考文件**: `Remote-Explorer.ts`
+- **功能描述**:
+  - 支持远程挖矿功能
+  - 可使用不同的挖矿模式（如"spiral"）
+
 ### 玩家指南链接
 - **URL**: `https://dfares.notion.site/DFAres-Round-4-Guide-c52181824f21461f9fa50a9f7989555c?pvs=74`
 - **配置位置**: `/packages/constants/src/index.ts`
@@ -89,6 +96,60 @@
 - **功能描述**:
   - 提供游戏相关的帮助文档
   - 解释游戏特定功能和机制
+
+## Dark Forest 前端API模块
+
+### @darkforest_eth 模块系统
+- **引用方式**: `https://cdn.skypack.dev/@darkforest_eth/...`
+- **主要模块**:
+  - `@darkforest_eth/types` - 游戏类型定义
+  - `@darkforest_eth/renderer` - 渲染器相关功能
+  - `@darkforest_eth/constants` - 游戏常量
+  - `@darkforest_eth/procedural` - 程序化生成
+  - `@darkforest_eth/serde` - 序列化/反序列化
+- **功能描述**:
+  - 提供游戏核心功能的模块化访问
+  - 允许插件开发者使用官方功能
+
+### 类型系统 (@darkforest_eth/types)
+- **主要类型**:
+  - `RendererType` - 渲染器类型枚举
+  - `AttribType` - 属性类型枚举
+  - `UniformType` - Uniform类型枚举
+  - `GameViewport` - 游戏视口接口
+  - `CanvasCoords` - 画布坐标接口
+  - `WorldCoords` - 世界坐标接口
+  - `Planet` - 行星数据接口
+  - `PlanetType` - 行星类型枚举
+  - `PlanetLevel` - 行星等级枚举
+  - `SpaceType` - 空间类型枚举
+- **功能描述**:
+  - 定义游戏中使用的所有类型和接口
+  - 支持强类型开发
+
+### 渲染器API (@darkforest_eth/renderer)
+- **主要类**:
+  - `GenericRenderer` - 基础渲染器类
+  - `GameGLManager` - WebGL上下文管理
+  - `EngineUtils` - 渲染引擎工具
+- **主要函数**:
+  - `glsl` - 着色器代码辅助函数
+  - `makeEmptyDoubleQuad` - 创建空四边形
+  - `makeDoubleQuadBuffered` - 创建缓冲四边形
+- **功能描述**:
+  - 提供WebGL渲染功能
+  - 支持自定义着色器和渲染器开发
+
+### 插件API
+- **主要方法**:
+  - `ui.getViewport()` - 获取游戏视口
+  - `ui.getGlManager()` - 获取WebGL管理器
+  - `ui.get2dRenderer()` - 获取2D Canvas上下文
+  - `ui.setCustomRenderer(renderer)` - 设置自定义渲染器
+  - `ui.disableCustomRenderer(renderer)` - 禁用自定义渲染器
+- **功能描述**:
+  - 允许插件与游戏UI交互
+  - 支持自定义视觉效果和交互
 
 ## 前端视图端口和交互接口
 
@@ -172,6 +233,27 @@
   - 定义行星属性和类型
   - 行星交互与管理
 
+## 渲染系统
+
+### 渲染器类型
+- **模块**: `@dfares/types` 中的 `RendererType`
+- **主要渲染器**:
+  - `PlanetRenderer` - 行星渲染器
+  - `MineRenderer` - 小行星带渲染器
+  - `SpaceRenderer` - 空间渲染器
+  - `UnminedRenderer` - 未开采区域渲染器
+  - `BackgroundRenderer` - 背景渲染器
+- **功能描述**:
+  - 定义不同游戏元素的渲染方式
+  - 支持自定义视觉效果
+
+### WebGL渲染接口
+- **模块**: `@dfares/renderer` 中的 `GameGLManager`
+- **功能描述**:
+  - 包装`WebGL2RenderingContext`
+  - 提供着色器程序管理
+  - 支持高性能3D渲染
+
 ## 网络通信
 
 ### EthConnection
@@ -220,11 +302,16 @@
 ## 插件相关端口
 
 ### 插件CDN
-- **URL**: `https://cdn.skypack.dev/@dfares/...`
+- **URL**: `https://cdn.skypack.dev/@dfares/...` 和 `https://cdn.skypack.dev/@darkforest_eth/...`
 - **功能描述**:
   - 用于加载游戏插件
-  - 提供@dfares命名空间下的各种模块
+  - 提供@dfares和@darkforest_eth命名空间下的各种模块
   - 包括游戏逻辑、类型定义、常量等
+- **常用引用**:
+  ```javascript
+  import { RendererType } from 'https://cdn.skypack.dev/@darkforest_eth/types';
+  import { EngineUtils, GenericRenderer, glsl } from 'https://cdn.skypack.dev/@darkforest_eth/renderer';
+  ```
 
 ### 插件网站
 - **URL**: `https://dfares-plugins.netlify.app/`
@@ -253,6 +340,7 @@
 4. 前端端口主要用于界面渲染、用户交互和网络通信
 5. 使用WebSocket进行实时通信，以太坊连接用于区块链交互
 6. 本文档中的URL和端点可能会因部署环境或游戏版本更新而变化
+7. DFARES-v0.1使用了大部分原始Dark Forest的API结构，但做了一些修改，如命名空间从`@darkforest_eth/`变更为`@dfares/`
 
 ## 开发资源
 
@@ -260,4 +348,7 @@
 - GitHub: `https://github.com/dfarchon/DFARES-v0.1/`
 - API文档: 
   - `https://github.com/dfarchon/DFARES-v0.1/blob/main/client/docs/classes/Backend_GameLogic_GameManager.default.md`
-  - `https://github.com/dfarchon/DFARES-v0.1/blob/main/client/docs/classes/Backend_GameLogic_GameUIManager.default.md` 
+  - `https://github.com/dfarchon/DFARES-v0.1/blob/main/client/docs/classes/Backend_GameLogic_GameUIManager.default.md`
+- 原始Dark Forest资源:
+  - `https://github.com/darkforest-eth/client`
+  - `https://github.com/darkforest-eth/packages` 
