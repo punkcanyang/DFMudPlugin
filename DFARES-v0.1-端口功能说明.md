@@ -111,6 +111,35 @@
   - 提供游戏核心功能的模块化访问
   - 允许插件开发者使用官方功能
 
+#### 模块引入方式
+```javascript
+// 从CDN引入
+import { WorldCoords, PlanetType } from 'https://cdn.skypack.dev/@darkforest_eth/types';
+import { GenericRenderer } from 'https://cdn.skypack.dev/@darkforest_eth/renderer';
+```
+
+#### 在插件中使用
+```javascript
+class MyPlugin {
+  constructor() {
+    this.worldCoords = null;
+    this.renderer = null;
+  }
+
+  async render(div) {
+    // 获取UI管理器
+    const ui = df.ui;
+    
+    // 使用类型和渲染器
+    this.worldCoords = ui.getWorldCoords();
+    const glManager = ui.getGlManager();
+    
+    // 创建自定义渲染器
+    this.renderer = new GenericRenderer(glManager);
+  }
+}
+```
+
 ### 类型系统 (@darkforest_eth/types)
 - **主要类型**:
   - `RendererType` - 渲染器类型枚举
@@ -127,6 +156,40 @@
   - 定义游戏中使用的所有类型和接口
   - 支持强类型开发
 
+#### 使用坐标系统示例
+```javascript
+// 创建世界坐标
+const worldPos = { x: 1000, y: 2000 };
+
+// 使用视口转换坐标
+const viewport = ui.getViewport();
+const canvasPos = viewport.worldToCanvasCoords(worldPos);
+
+// 显示坐标信息
+console.log(`世界坐标: (${worldPos.x}, ${worldPos.y})`);
+console.log(`画布坐标: (${canvasPos.x}, ${canvasPos.y})`);
+```
+
+#### 使用行星类型示例
+```javascript
+// 检查行星类型
+function getPlanetDescription(planet) {
+  // 使用PlanetType枚举
+  switch (planet.planetType) {
+    case PlanetType.PLANET:
+      return "普通行星";
+    case PlanetType.SILVER_MINE:
+      return "银矿";
+    case PlanetType.RUINS:
+      return "遗迹";
+    case PlanetType.TRADING_POST:
+      return "交易站";
+    default:
+      return "未知类型";
+  }
+}
+```
+
 ### 渲染器API (@darkforest_eth/renderer)
 - **主要类**:
   - `GenericRenderer` - 基础渲染器类
@@ -140,6 +203,39 @@
   - 提供WebGL渲染功能
   - 支持自定义着色器和渲染器开发
 
+#### 创建自定义渲染器示例
+```javascript
+// 创建自定义行星渲染器
+function createCustomPlanetRenderer(ui) {
+  const glManager = ui.getGlManager();
+  
+  // 使用GenericRenderer
+  const renderer = new GenericRenderer(glManager);
+  
+  // 使用着色器辅助函数
+  const vertexShader = glsl`
+    precision highp float;
+    attribute vec2 a_position;
+    void main() {
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+  `;
+  
+  const fragmentShader = glsl`
+    precision highp float;
+    void main() {
+      gl_FragColor = vec4(1.0, 0.5, 0.0, 1.0); // 橙色
+    }
+  `;
+  
+  // 初始化渲染器
+  renderer.setUniforms({});
+  renderer.compileShaders(vertexShader, fragmentShader);
+  
+  return renderer;
+}
+```
+
 ### 插件API
 - **主要方法**:
   - `ui.getViewport()` - 获取游戏视口
@@ -150,6 +246,76 @@
 - **功能描述**:
   - 允许插件与游戏UI交互
   - 支持自定义视觉效果和交互
+
+#### 插件开发完整示例
+```javascript
+// 简单的行星着色插件
+class PlanetColorizer {
+  constructor() {
+    this.container = null;
+    this.planetColors = new Map();
+  }
+  
+  async render(container) {
+    this.container = container;
+    container.style.width = '200px';
+    
+    // 创建UI
+    const colorButton = document.createElement('button');
+    colorButton.innerText = '给行星着色';
+    colorButton.onclick = () => this.colorizeSelectedPlanet();
+    container.appendChild(colorButton);
+    
+    // 创建颜色选择器
+    const colorPicker = document.createElement('input');
+    colorPicker.type = 'color';
+    colorPicker.value = '#00ff00';
+    colorPicker.id = 'planet-color';
+    container.appendChild(colorPicker);
+    
+    // 注册渲染回调
+    df.renderer.on('renderPlanet', (planet) => {
+      this.onRenderPlanet(planet);
+    });
+  }
+  
+  colorizeSelectedPlanet() {
+    const planet = ui.getSelectedPlanet();
+    if (!planet) {
+      alert('请先选择一个行星');
+      return;
+    }
+    
+    const color = document.getElementById('planet-color').value;
+    this.planetColors.set(planet.locationId, color);
+  }
+  
+  onRenderPlanet(planet) {
+    if (this.planetColors.has(planet.locationId)) {
+      const color = this.planetColors.get(planet.locationId);
+      // 这里实现自定义渲染
+      // 实际实现会更复杂，需要使用WebGL
+    }
+  }
+  
+  destroy() {
+    this.container.innerHTML = '';
+  }
+}
+
+// 注册插件
+class Plugin {
+  constructor() {
+    this.colorizer = new PlanetColorizer();
+  }
+  
+  async render(container) {
+    this.colorizer.render(container);
+  }
+}
+
+export default Plugin;
+```
 
 ## 前端视图端口和交互接口
 
@@ -183,6 +349,34 @@
   - `onScroll(deltaY: number, forceZoom = false)` - 处理滚轮事件
   - `onWindowResize()` - 处理窗口大小改变事件
 
+#### Viewport使用示例
+```javascript
+// 获取游戏视口
+const viewport = df.ui.getViewport();
+
+// 中心定位到特定坐标
+viewport.centerCoords({ x: 0, y: 0 });
+
+// 放大视图
+viewport.zoomIn();
+
+// 获取鼠标位置对应的世界坐标
+function onMouseMove(e) {
+  const canvasCoords = { x: e.clientX, y: e.clientY };
+  const worldCoords = viewport.canvasToWorldCoords(canvasCoords);
+  console.log(`鼠标指向的世界坐标: (${worldCoords.x}, ${worldCoords.y})`);
+}
+
+// 缩放到特定行星
+function focusOnPlanet(planetId) {
+  const planet = df.getPlanetWithId(planetId);
+  if (planet) {
+    viewport.centerPlanet(planet);
+    viewport.zoomPlanet(planet, 2); // 2倍行星半径的视图
+  }
+}
+```
+
 ## 前端核心模块
 
 ### GameUIManager
@@ -192,12 +386,70 @@
   - 处理用户交互
   - 连接游戏逻辑与前端显示
 
+#### GameUIManager使用示例
+```javascript
+// 获取当前选中的行星
+const selectedPlanet = df.ui.getSelectedPlanet();
+
+// 获取当前用户的行星
+const myPlanets = df.getMyPlanets();
+
+// 选择一个行星
+function selectPlanet(planetId) {
+  df.ui.setSelectedPlanet(planetId);
+}
+
+// 获取当前游戏状态
+function getGameState() {
+  return {
+    selectedPlanet: df.ui.getSelectedPlanet(),
+    hoverPlanet: df.ui.getHoverPlanet(),
+    viewportChunk: df.ui.getViewportChunk(),
+    gameTime: df.ui.getGameTime()
+  };
+}
+```
+
 ### Monomitter系统
 - **模块**: `@dfares/events`
 - **功能描述**:
   - 事件发布与订阅系统
   - 用于组件间通信
   - 实现类似响应式的数据流
+
+#### Monomitter使用示例
+```javascript
+// 订阅行星选择事件
+df.ui.selectedPlanetId$.subscribe((planetId) => {
+  if (planetId) {
+    console.log(`选中了行星: ${planetId}`);
+    const planet = df.getPlanetWithId(planetId);
+    updatePlanetInfo(planet);
+  } else {
+    console.log('取消选择行星');
+    clearPlanetInfo();
+  }
+});
+
+// 订阅游戏时间变化
+df.ui.gameTime$.subscribe((gameTime) => {
+  console.log(`游戏时间更新: ${gameTime}`);
+  updateGameClock(gameTime);
+});
+
+// 自定义事件处理函数
+function updatePlanetInfo(planet) {
+  // 更新UI显示
+}
+
+function clearPlanetInfo() {
+  // 清除UI显示
+}
+
+function updateGameClock(time) {
+  // 更新游戏时钟显示
+}
+```
 
 ### 插件系统
 - **模块**: `@dfares/types` 中的 `PluginId` 
@@ -227,11 +479,77 @@
   - 将游戏世界分割为可管理的区块
   - 支持数据加载和游戏世界生成
 
+#### 区块系统使用示例
+```javascript
+// 获取当前视图区块
+const currentChunk = df.ui.getViewportChunk();
+
+// 加载特定区块数据
+function loadChunkData(chunkX, chunkY) {
+  const chunkId = df.getChunkKey(chunkX, chunkY);
+  
+  // 检查区块是否已加载
+  const isExplored = df.getChunkStore().hasChunk(chunkId);
+  
+  if (!isExplored) {
+    console.log(`区块(${chunkX},${chunkY})尚未探索`);
+  } else {
+    const chunk = df.getChunkStore().getChunkById(chunkId);
+    console.log(`区块数据:`, chunk);
+  }
+}
+
+// 计算坐标所在的区块
+function getChunkFromCoords(worldX, worldY) {
+  const chunkSize = df.getChunkSize();
+  const chunkX = Math.floor(worldX / chunkSize);
+  const chunkY = Math.floor(worldY / chunkSize);
+  return { chunkX, chunkY };
+}
+```
+
 ### 行星系统
 - **模块**: `@dfares/types` 中的 `Planet`、`PlanetType`、`PlanetLevel`
 - **功能描述**:
   - 定义行星属性和类型
   - 行星交互与管理
+
+#### 行星系统使用示例
+```javascript
+// 行星数据处理
+function analyzePlanet(planetId) {
+  const planet = df.getPlanetWithId(planetId);
+  if (!planet) return "找不到行星";
+  
+  return {
+    位置: planet.location,
+    等级: planet.planetLevel,
+    类型: planet.planetType,
+    能量: planet.energy,
+    银矿: planet.silver,
+    拥有者: planet.owner,
+    半径: planet.radius
+  };
+}
+
+// 计算行星能量恢复时间
+function calculateEnergyRecoveryTime(planetId, targetEnergyPercent) {
+  const planet = df.getPlanetWithId(planetId);
+  if (!planet) return "找不到行星";
+  
+  const currentEnergy = planet.energy;
+  const energyCap = planet.energyCap;
+  const targetEnergy = energyCap * (targetEnergyPercent / 100);
+  const energyToRecover = targetEnergy - currentEnergy;
+  
+  if (energyToRecover <= 0) return "已达到目标能量";
+  
+  const energyPerHour = planet.energyGrowth;
+  const hoursToRecover = energyToRecover / energyPerHour;
+  
+  return `恢复到${targetEnergyPercent}%能量需要${hoursToRecover.toFixed(2)}小时`;
+}
+```
 
 ## 渲染系统
 
@@ -270,6 +588,48 @@
   - 管理游戏交易
   - 处理交易确认和事件
 
+#### 网络通信使用示例
+```javascript
+// 与合约交互
+async function sendFleet(fromId, toId, energy) {
+  try {
+    // 获取行星
+    const from = df.getPlanetWithId(fromId);
+    const to = df.getPlanetWithId(toId);
+    
+    // 使用游戏管理器发送交易
+    await df.move(fromId, toId, energy, 0);
+    
+    return "舰队已发送";
+  } catch (e) {
+    return `发送失败: ${e.message}`;
+  }
+}
+
+// 查询当前Gas价格
+async function getCurrentGasPrice() {
+  const provider = df.getEthConnection().getProvider();
+  const gasPrice = await provider.getGasPrice();
+  return `当前Gas价格: ${ethers.utils.formatUnits(gasPrice, 'gwei')} gwei`;
+}
+
+// 监听交易确认
+function monitorTransaction(txHash) {
+  df.getEthConnection().waitForTransaction(txHash)
+    .then(receipt => {
+      console.log(`交易已确认，区块号: ${receipt.blockNumber}`);
+      if (receipt.status === 1) {
+        console.log('交易成功');
+      } else {
+        console.log('交易失败');
+      }
+    })
+    .catch(error => {
+      console.error('交易错误:', error);
+    });
+}
+```
+
 ### WebSocket通信
 - **功能描述**:
   - 实时游戏事件通信
@@ -286,6 +646,37 @@
 - **功能描述**:
   - 提供游戏中使用的加密和哈希功能
   - 支持游戏世界生成和验证
+
+#### 哈希函数使用示例
+```javascript
+// 使用MiMC哈希
+import { mimcHash } from 'https://cdn.skypack.dev/@darkforest_eth/hashing';
+
+function hashCoords(x, y) {
+  return mimcHash(x, y);
+}
+
+// 生成随机行星位置
+function getRandomPlanetLocation(x, y, salt) {
+  const hash = mimcHash(x, y, salt);
+  // 将哈希值转换为坐标
+  const newX = parseInt(hash.slice(0, 10), 16) % 1000;
+  const newY = parseInt(hash.slice(10, 20), 16) % 1000;
+  return { x: newX, y: newY };
+}
+
+// 使用Perlin噪声
+import { perlin } from 'https://cdn.skypack.dev/@darkforest_eth/hashing';
+
+function getBiomeAtLocation(x, y) {
+  const noise = perlin(x, y);
+  // 根据噪声值确定生物群系
+  if (noise < -0.5) return "冰原";
+  if (noise < 0) return "森林";
+  if (noise < 0.5) return "平原";
+  return "沙漠";
+}
+```
 
 ### 零知识证明系统
 - **模块**: `@dfares/snarks`
@@ -332,7 +723,7 @@
   - `Bounty-Hunter.js` - 赏金猎人系统
   - `Towards-Center.js` - 中心导航工具
 
-## 注意事项
+## 开发注意事项
 
 1. DFARES-v0.1是Dark Forest游戏的改版，专注于竞技和特定回合的游戏体验
 2. 该版本可能有不同于原版的API和接口变化
@@ -341,6 +732,9 @@
 5. 使用WebSocket进行实时通信，以太坊连接用于区块链交互
 6. 本文档中的URL和端点可能会因部署环境或游戏版本更新而变化
 7. DFARES-v0.1使用了大部分原始Dark Forest的API结构，但做了一些修改，如命名空间从`@darkforest_eth/`变更为`@dfares/`
+8. 在开发插件时，应始终通过`df`全局对象和`ui`接口访问游戏功能
+9. 渲染器API需要一定的WebGL知识，建议先了解基本的着色器编程
+10. 自定义渲染器会在每一帧被调用，注意性能优化
 
 ## 开发资源
 
