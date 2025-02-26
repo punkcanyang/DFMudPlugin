@@ -86,32 +86,6 @@ class GasLimitChecker {
     enableDiv.appendChild(enableLabel);
     this.container.appendChild(enableDiv);
     
-    // 添加自动同步开关
-    const autoSyncDiv = document.createElement('div');
-    autoSyncDiv.style.marginBottom = '10px';
-    
-    const autoSyncCheckbox = document.createElement('input');
-    autoSyncCheckbox.type = 'checkbox';
-    autoSyncCheckbox.id = 'gas-checker-autosync';
-    autoSyncCheckbox.checked = this.autoSyncEnabled;
-    autoSyncCheckbox.addEventListener('change', () => {
-      this.autoSyncEnabled = autoSyncCheckbox.checked;
-      if (this.autoSyncEnabled) {
-        this.startAutoSync();
-      } else {
-        this.stopAutoSync();
-      }
-      this.updateUI();
-    });
-    
-    const autoSyncLabel = document.createElement('label');
-    autoSyncLabel.htmlFor = 'gas-checker-autosync';
-    autoSyncLabel.innerText = '自动同步Gas设置';
-    
-    autoSyncDiv.appendChild(autoSyncCheckbox);
-    autoSyncDiv.appendChild(autoSyncLabel);
-    this.container.appendChild(autoSyncDiv);
-    
     // 当前Gas设置信息显示
     const gasInfoDiv = document.createElement('div');
     gasInfoDiv.style.marginBottom = '16px';
@@ -278,14 +252,7 @@ class GasLimitChecker {
       console.log(syncMessage);
       console.log('从localStorage获取的GasFeeGwei:', storedGasFeeGwei);
 
-      this.showNotification(syncMessage, 'info', 1000);
-      
-      // 如果成功获取到值，记录同步时间和设置
-      this.lastSyncTime = Date.now();
-      this.lastGasSettings = {
-        gasFeeGwei: this.maxGasPrice,
-        gasFeeLimit: this.maxGasLimit
-      };
+      this.showNotification(syncMessage, 'info', 5000);
       
     } catch (err) {
       console.error('同步Gas设置失败:', err);
@@ -307,15 +274,9 @@ class GasLimitChecker {
       `;
     }
     
-    // 更新状态信息，包括自动同步状态和最后同步时间
-    let lastSyncText = this.lastSyncTime > 0 
-      ? new Date(this.lastSyncTime).toLocaleTimeString() 
-      : '尚未同步';
-      
+    // 更新状态信息
     this.statusDiv.innerHTML = `
       <p><strong>状态:</strong> ${this.enabled ? '已启用' : '已禁用'}</p>
-      <p><strong>自动同步:</strong> ${this.autoSyncEnabled ? '已启用' : '已禁用'}</p>
-      <p><strong>最后同步:</strong> ${lastSyncText}</p>
       <p><strong>已拒绝交易:</strong> ${this.rejectedTransactions.length}个</p>
     `;
     
@@ -331,7 +292,7 @@ class GasLimitChecker {
           <strong>${tx.type}</strong> - 
           预估Gas: ${tx.estimatedGas} | 
           价格: ${tx.gasPrice} gwei | 
-          时间: ${new Date(tx.timestamp).toLocaleTimeString()}
+          时1: ${new Date(tx.timestamp).toLocaleTimeString()}
         `;
         ul.appendChild(li);
       });
@@ -387,13 +348,32 @@ class GasLimitChecker {
             const errorStr = JSON.stringify(err).toLowerCase();
             console.log('错误信息完整字符串:', errorStr);
             
-            if (errorStr.includes('maxfeepergas too low') || 
-                errorStr.includes('gas price too low') || 
-                errorStr.includes('gas fee too low') ||
-                errorStr.includes('max fee per gas too low') ||
-                errorStr.includes('maxfeepergas too low to be include') ||
-                errorStr.includes('underpriced') ||
-                errorStr.includes('fee too low')) {
+            // 尝试深入获取错误信息
+            let detailedError = '';
+            if (err.error) detailedError += JSON.stringify(err.error).toLowerCase();
+            if (err.message) detailedError += ' ' + err.message.toLowerCase();
+            if (err.data) detailedError += ' ' + JSON.stringify(err.data).toLowerCase();
+            if (err.reason) detailedError += ' ' + err.reason.toLowerCase();
+            if (err.details) detailedError += ' ' + err.details.toLowerCase();
+            
+            console.log('详细错误信息:', detailedError);
+            
+            const combinedErrorStr = (errorStr + ' ' + detailedError).toLowerCase();
+            
+            // 扩展错误匹配模式
+            if (combinedErrorStr.includes('maxfeepergas too low') || 
+                combinedErrorStr.includes('gas price too low') || 
+                combinedErrorStr.includes('gas fee too low') ||
+                combinedErrorStr.includes('max fee per gas too low') ||
+                combinedErrorStr.includes('maxfeepergas too low to be include') ||
+                combinedErrorStr.includes('underpriced') ||
+                combinedErrorStr.includes('fee too low') ||
+                combinedErrorStr.includes('gas too low') ||
+                combinedErrorStr.includes('基础费用太低') ||
+                combinedErrorStr.includes('低于允许的最小值') ||
+                combinedErrorStr.includes('below minimum') ||
+                combinedErrorStr.includes('insufficient funds') ||
+                combinedErrorStr.includes('低于最小gas价格')) {
               
               const reason = 'Gas价格太低，无法被网络接受，请在游戏中提高Gas价格设置';
               console.error('交易被拒绝: ' + reason, err);
@@ -522,59 +502,183 @@ class GasLimitChecker {
           }
           
           // 未超过限制，使用原始方法
-          try {
-            return await originalQueueTransaction(intent, overrides);
-          } catch (txError) {
-            // 更详细地记录错误信息，帮助调试
-            console.error('交易执行失败，完整错误:', txError);
-            const txErrorStr = JSON.stringify(txError).toLowerCase();
-            console.log('交易错误完整字符串:', txErrorStr);
-            
-            // 检查是否是因为Gas价格过低导致交易失败
-            if (txErrorStr.includes('maxfeepergas too low') || 
-                txErrorStr.includes('gas price too low') || 
-                txErrorStr.includes('gas fee too low') ||
-                txErrorStr.includes('max fee per gas too low') ||
-                txErrorStr.includes('maxfeepergas too low to be include') ||
-                txErrorStr.includes('underpriced') ||
-                txErrorStr.includes('fee too low')) {
-              
-              const reason = 'Gas价格太低，无法被网络接受，建议在游戏中提高Gas价格设置';
-              console.error('交易执行失败: ' + reason, txError);
-              
-              // 记录被拒绝的交易
-              this.rejectedTransactions.unshift({
-                type: txType,
-                estimatedGas,
-                gasPrice,
-                timestamp: Date.now(),
-                reason: 'Gas价格过低'
-              });
-              
-              // 限制数组大小
-              if (this.rejectedTransactions.length > 50) {
-                this.rejectedTransactions.pop();
-              }
-              
-              // 更新UI
-              this.updateUI();
-              
-              // 提示用户
-              this.showNotification(`交易失败: ${reason}`, 'error', 10000);
-            }
-            
-            // 将原始错误抛出
-            throw txError;
-          }
+          return originalQueueTransaction(intent, overrides);
         } catch (err) {
-          console.error('GasLimitChecker拦截错误:', err);
+          console.error('拦截交易执行失败:', err);
+          this.showNotification('拦截交易执行失败，请查看控制台', 'error', 5000);
           // 出错时使用原始方法
           return originalQueueTransaction(intent, overrides);
         }
       };
     } catch (err) {
-      console.error('拦截交易执行失败:', err);
-      this.showNotification('拦截交易执行失败，请查看控制台', 'error', 5000);
+      console.error('设置交易拦截器失败:', err);
+      this.showNotification('设置交易拦截器失败，请查看控制台', 'error', 5000);
+    }
+  }
+
+  /**
+   * 拦截网络请求以检测Gas错误
+   */
+  interceptNetworkRequests() {
+    try {
+      // 只在window和XMLHttpRequest可用的环境中执行
+      if (typeof window === 'undefined' || !window.XMLHttpRequest) {
+        return;
+      }
+      
+      const self = this;
+      const originalXHRSend = XMLHttpRequest.prototype.send;
+      const originalFetch = window.fetch;
+      
+      // 拦截XMLHttpRequest发送
+      XMLHttpRequest.prototype.send = function(body) {
+        const originalOnReadyStateChange = this.onreadystatechange;
+        
+        this.onreadystatechange = function() {
+          if (this.readyState === 4) {
+            try {
+              // 检查是否包含Gas错误
+              if (this.responseText && typeof this.responseText === 'string') {
+                const responseStr = this.responseText.toLowerCase();
+                console.log('XHR响应检查Gas错误:', responseStr.substring(0, 200) + '...');
+                
+                if (responseStr.includes('maxfeepergas too low') || 
+                    responseStr.includes('gas too low') ||
+                    responseStr.includes('underpriced') ||
+                    responseStr.includes('fee too low') ||
+                    responseStr.includes('gas price too low') ||
+                    responseStr.includes('insufficient funds') ||
+                    responseStr.includes('low fee') ||
+                    responseStr.includes('below minimum') ||
+                    responseStr.includes('低于最小gas')) {
+                  
+                  console.error('网络请求拦截到Gas错误:', this.responseText);
+                  self.showNotification('检测到交易失败: Gas价格太低，请在游戏中提高Gas设置', 'error', 10000);
+                }
+              }
+            } catch (e) {
+              console.error('检查XHR响应错误:', e);
+            }
+          }
+          
+          if (originalOnReadyStateChange) {
+            originalOnReadyStateChange.apply(this, arguments);
+          }
+        };
+        
+        return originalXHRSend.apply(this, arguments);
+      };
+      
+      // 拦截Fetch请求
+      window.fetch = async function(...args) {
+        try {
+          const response = await originalFetch.apply(this, args);
+          
+          // 克隆响应以避免消耗流
+          const clonedResponse = response.clone();
+          
+          // 尝试读取响应并检查Gas错误
+          clonedResponse.text().then(text => {
+            try {
+              console.log('Fetch响应检查Gas错误:', text.substring(0, 200) + '...');
+              const lowerText = text.toLowerCase();
+              
+              if (lowerText.includes('maxfeepergas too low') || 
+                  lowerText.includes('gas too low') ||
+                  lowerText.includes('gas price too low') ||
+                  lowerText.includes('underpriced') ||
+                  lowerText.includes('fee too low') ||
+                  lowerText.includes('insufficient funds') ||
+                  lowerText.includes('below minimum') ||
+                  lowerText.includes('低于最小gas')) {
+                
+                console.error('Fetch请求拦截到Gas错误:', text);
+                self.showNotification('检测到交易失败: Gas价格太低，请在游戏中提高Gas设置', 'error', 10000);
+              }
+            } catch (e) {
+              console.error('检查Fetch响应错误:', e);
+            }
+          }).catch(err => {
+            console.error('读取Fetch响应失败:', err);
+          });
+          
+          return response;
+        } catch (error) {
+          console.error('Fetch请求失败:', error);
+          throw error;
+        }
+      };
+    } catch (err) {
+      console.error('设置网络请求拦截器失败:', err);
+    }
+  }
+
+  /**
+   * 启动自动同步
+   */
+  startAutoSync() {
+    if (this.autoSyncEnabled && !this.autoSyncInterval) {
+      // 每5分钟检查一次游戏设置变化
+      this.autoSyncInterval = setInterval(() => {
+        this.checkForGasSettingsChange();
+      }, 5 * 60 * 1000);
+      
+      console.log('已启动Gas设置自动同步');
+    }
+  }
+  
+  /**
+   * 停止自动同步
+   */
+  stopAutoSync() {
+    if (this.autoSyncInterval) {
+      clearInterval(this.autoSyncInterval);
+      this.autoSyncInterval = null;
+      console.log('已停止Gas设置自动同步');
+    }
+  }
+  
+  /**
+   * 检查Gas设置是否有变化
+   */
+  async checkForGasSettingsChange() {
+    try {
+      if (!window.df) return;
+      
+      const config = {
+        contractAddress: typeof df.contractAddress === 'function' ? df.contractAddress() : df.contractAddress,
+        account: typeof df.account === 'function' ? df.account() : df.account
+      };
+      
+      if (!config.contractAddress || !config.account) return;
+      
+      // 获取当前游戏的Gas设置
+      const gasFeeGweiKey = `${config.contractAddress}:${config.account}:GasFeeGwei`;
+      const gasFeeLimitKey = `${config.contractAddress}:${config.account}:GasFeeLimit`;
+      
+      const storedGasFeeGwei = localStorage.getItem(gasFeeGweiKey);
+      const storedGasFeeLimit = localStorage.getItem(gasFeeLimitKey);
+      
+      const currentSettings = {
+        gasFeeGwei: storedGasFeeGwei ? parseFloat(storedGasFeeGwei) : null,
+        gasFeeLimit: storedGasFeeLimit ? parseInt(storedGasFeeLimit, 10) : null
+      };
+      
+      // 比较当前设置和上次同步的设置
+      const hasChanged = 
+        this.lastGasSettings.gasFeeGwei !== currentSettings.gasFeeGwei ||
+        this.lastGasSettings.gasFeeLimit !== currentSettings.gasFeeLimit;
+      
+      if (hasChanged) {
+        console.log('检测到Gas设置变化，正在同步...');
+        this.syncFromGameSettings();
+        
+        // 更新上次同步的设置
+        this.lastGasSettings = { ...currentSettings };
+        this.lastSyncTime = Date.now();
+      }
+    } catch (err) {
+      console.error('检查Gas设置变化时出错:', err);
     }
   }
 
@@ -584,6 +688,21 @@ class GasLimitChecker {
   cleanup() {
     // 停止自动同步
     this.stopAutoSync();
+    
+    // 恢复原始的网络请求方法
+    try {
+      if (typeof window !== 'undefined') {
+        if (window.XMLHttpRequest && window.XMLHttpRequest.prototype.send.__originalSend) {
+          window.XMLHttpRequest.prototype.send = window.XMLHttpRequest.prototype.send.__originalSend;
+        }
+        
+        if (window.fetch && window.fetch.__originalFetch) {
+          window.fetch = window.fetch.__originalFetch;
+        }
+      }
+    } catch (e) {
+      console.error('恢复原始网络请求方法失败:', e);
+    }
     
     // 恢复原始的queueTransaction方法
     if (df && df.contractsAPI && df.contractsAPI.txExecutor) {
@@ -625,186 +744,6 @@ class GasLimitChecker {
       console.error('显示通知失败:', e);
     }
   }
-
-  /**
-   * 启动自动同步定时器
-   */
-  startAutoSync() {
-    // 如果已经有定时器，先停止
-    this.stopAutoSync();
-    
-    if (this.autoSyncEnabled) {
-      console.log('启动Gas设置自动同步 (每5秒检查一次)');
-      // 每5秒检查一次
-      this.autoSyncInterval = setInterval(() => {
-        this.checkForGasSettingsChanges();
-      }, 5000);
-    }
-  }
-  
-  /**
-   * 停止自动同步定时器
-   */
-  stopAutoSync() {
-    if (this.autoSyncInterval) {
-      clearInterval(this.autoSyncInterval);
-      this.autoSyncInterval = null;
-      console.log('停止Gas设置自动同步');
-    }
-  }
-  
-  /**
-   * 检查Gas设置是否有变化
-   */
-  checkForGasSettingsChanges() {
-    // 如果df对象不可用，跳过检查
-    if (!window.df) return;
-    
-    try {
-      // 获取当前账户和合约地址信息
-      let config = { contractAddress: null, account: null };
-      
-      // 尝试获取合约地址和账户
-      if (df.contractAddress) {
-        config.contractAddress = typeof df.contractAddress === 'function' 
-          ? df.contractAddress() 
-          : df.contractAddress;
-      } else if (typeof df.getContractAddress === 'function') {
-        config.contractAddress = df.getContractAddress();
-      }
-      
-      if (df.account) {
-        config.account = typeof df.account === 'function' 
-          ? df.account() 
-          : df.account;
-      } else if (typeof df.getAccount === 'function') {
-        config.account = df.getAccount();
-      }
-      
-      // 如果无法获取必要的信息，跳过检查
-      if (!config.contractAddress || !config.account) {
-        return;
-      }
-      
-      // 检查GasFeeGwei是否有变化
-      const gasFeeGweiKey = `${config.contractAddress}:${config.account}:GasFeeGwei`;
-      const storedGasFeeGwei = localStorage.getItem(gasFeeGweiKey);
-      const currentGasFeeGwei = storedGasFeeGwei ? parseFloat(storedGasFeeGwei) : null;
-      
-      // 检查GasFeeLimit是否有变化
-      const gasFeeLimitKey = `${config.contractAddress}:${config.account}:GasFeeLimit`;
-      const storedGasFeeLimit = localStorage.getItem(gasFeeLimitKey);
-      const currentGasFeeLimit = storedGasFeeLimit ? parseInt(storedGasFeeLimit, 10) : null;
-      
-      // 检查是否有变化
-      const hasGasFeeGweiChanged = currentGasFeeGwei && 
-        (!this.lastGasSettings.gasFeeGwei || currentGasFeeGwei !== this.lastGasSettings.gasFeeGwei);
-        
-      const hasGasFeeLimitChanged = currentGasFeeLimit && 
-        (!this.lastGasSettings.gasFeeLimit || currentGasFeeLimit !== this.lastGasSettings.gasFeeLimit);
-      
-      // 如果有变化，同步设置
-      if (hasGasFeeGweiChanged || hasGasFeeLimitChanged) {
-        console.log('检测到Gas设置变化，自动同步中...');
-        
-        if (hasGasFeeGweiChanged) {
-          console.log(`Gas价格已变化: ${this.lastGasSettings.gasFeeGwei || '未设置'} -> ${currentGasFeeGwei}`);
-        }
-        
-        if (hasGasFeeLimitChanged) {
-          console.log(`Gas限制已变化: ${this.lastGasSettings.gasFeeLimit || '未设置'} -> ${currentGasFeeLimit}`);
-        }
-        
-        // 执行同步
-        this.syncFromGameSettings();
-        this.showNotification('已自动同步Gas设置', 'info', 3000);
-      }
-    } catch (err) {
-      console.error('自动同步检查失败:', err);
-      // 自动同步错误不显示通知，避免打扰用户
-    }
-  }
-
-  /**
-   * 添加拦截网络请求的方法，进一步捕获Gas价格过低错误
-   */
-  interceptNetworkRequests() {
-    try {
-      // 只在window和XMLHttpRequest可用的环境中执行
-      if (typeof window === 'undefined' || !window.XMLHttpRequest) {
-        return;
-      }
-      
-      const self = this;
-      const originalXHRSend = XMLHttpRequest.prototype.send;
-      const originalFetch = window.fetch;
-      
-      // 拦截XMLHttpRequest发送
-      XMLHttpRequest.prototype.send = function(body) {
-        const originalOnReadyStateChange = this.onreadystatechange;
-        
-        this.onreadystatechange = function() {
-          if (this.readyState === 4) {
-            try {
-              // 检查是否包含Gas错误
-              if (this.responseText && typeof this.responseText === 'string') {
-                const responseStr = this.responseText.toLowerCase();
-                if (responseStr.includes('maxfeepergas too low') || 
-                    responseStr.includes('gas too low') ||
-                    responseStr.includes('underpriced') ||
-                    responseStr.includes('fee too low')) {
-                  
-                  console.error('网络请求拦截到Gas错误:', this.responseText);
-                  self.showNotification('检测到交易失败: Gas价格太低，请在游戏中提高Gas设置', 'error', 10000);
-                }
-              }
-            } catch (e) {
-              console.error('检查XHR响应错误:', e);
-            }
-          }
-          
-          if (originalOnReadyStateChange) {
-            originalOnReadyStateChange.apply(this, arguments);
-          }
-        };
-        
-        return originalXHRSend.apply(this, arguments);
-      };
-      
-      // 拦截Fetch请求
-      window.fetch = async function(...args) {
-        try {
-          const response = await originalFetch.apply(this, args);
-          
-          // 克隆响应以避免消耗流
-          const clonedResponse = response.clone();
-          
-          // 尝试读取响应并检查Gas错误
-          clonedResponse.text().then(text => {
-            try {
-              if (text && text.toLowerCase().includes('maxfeepergas too low')) {
-                console.error('Fetch请求拦截到Gas错误:', text);
-                self.showNotification('检测到交易失败: Gas价格太低，请在游戏中提高Gas设置', 'error', 10000);
-              }
-            } catch (e) {
-              console.error('检查Fetch响应错误:', e);
-            }
-          }).catch(err => {
-            console.error('读取Fetch响应失败:', err);
-          });
-          
-          return response;
-        } catch (error) {
-          console.error('Fetch请求失败:', error);
-          throw error;
-        }
-      };
-      
-      console.log('已启用网络请求拦截，用于捕获Gas价格错误');
-    } catch (e) {
-      console.error('设置网络请求拦截失败:', e);
-    }
-  }
 }
 
 // 注册插件
@@ -822,4 +761,4 @@ class GasLimitCheckerPlugin {
   }
 }
 
-export default GasLimitCheckerPlugin; 
+export default GasLimitCheckerPlugin;
