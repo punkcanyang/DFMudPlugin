@@ -62,6 +62,29 @@ class GasLimitChecker {
       'getPlanetsByIds',
       'getPlayerById'
     ];
+    
+    // 记录交易历史和错误模式
+    this.transactionHistory = {
+      successfulTxs: {}, // 按交易类型记录成功的交易
+      failedTxs: {},     // 按交易类型记录失败的交易
+      revertPatterns: {} // 记录某种操作的常见失败原因
+    };
+    
+    // 记录常见的错误模式到易读的错误信息映射
+    this.errorPatternToMessage = {
+      'not owner': '你不是此对象的所有者',
+      'insufficient': '资源不足',
+      'not enough': '资源不足',
+      'exceeds': '超出限制',
+      'cooldown': '操作冷却中，请稍后再试',
+      'invalid': '无效的操作或参数',
+      'unauthorized': '未授权的操作',
+      'already': '操作已存在或已完成',
+      'not found': '找不到相关对象或资源',
+      'no permission': '没有权限执行此操作',
+      'not initialized': '系统尚未初始化',
+      'paused': '系统当前已暂停'
+    };
   }
 
   /**
@@ -75,6 +98,7 @@ class GasLimitChecker {
       this.setupUI();
       this.interceptTxExecution();
       this.interceptNetworkRequests(); // 添加网络请求拦截
+      this.setupTransactionMonitoring(); // 添加交易结果监控
       
       // 初始同步一次
       this.syncFromGameSettings();
@@ -605,6 +629,232 @@ class GasLimitChecker {
       // 获取交易参数
       const args = await intent.args;
       
+      // 检查历史交易记录中的失败模式
+      const commonFailureReason = this.getMostCommonFailureReason(txType);
+      if (commonFailureReason) {
+        console.log(`${txType} 有历史失败记录，常见失败原因: ${commonFailureReason}`);
+        
+        // 根据失败历史和成功历史的比例判断风险
+        const failureHistory = this.transactionHistory.failedTxs[txType];
+        const successHistory = this.transactionHistory.successfulTxs[txType];
+        
+        if (failureHistory && successHistory) {
+          const totalTxs = (failureHistory.count || 0) + (successHistory.count || 0);
+          const failureRate = failureHistory.count / totalTxs;
+          
+          // 如果失败率超过50%，提示用户
+          if (failureRate > 0.5) {
+            console.warn(`${txType} 的历史失败率为 ${(failureRate * 100).toFixed(1)}%，存在高风险`);
+            
+            // 如果是近期的失败（最近10分钟内），给出强烈警告
+            const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+            if (failureHistory.lastFailure > tenMinutesAgo) {
+              // 最近有失败记录，可能条件未变，高风险
+              console.error(`${txType} 在最近10分钟内有失败记录，条件可能未改变`);
+              
+              const reason = `此操作最近失败过: ${commonFailureReason}`;
+              console.error('预警交易可能会失败:', reason);
+              
+              this.showNotification(`交易风险提示: ${reason}`, 'warning', 10000);
+            }
+          }
+        }
+      }
+      
+      // 尝试模拟交易执行，检查是否会被恢复（reverted）
+      try {
+        console.log(`模拟执行交易 ${txType} 以检查可能的失败...`);
+        
+        // 创建用于模拟的调用对象
+        const callData = {
+          from: df.account,
+          to: intent.contract.address,
+          data: intent.contract.interface.encodeFunctionData(txType, args)
+        };
+        
+        // 尝试不同方式进行交易模拟
+        let simulationSuccess = false;
+        
+        // 方法1：使用window.ethereum直接调用
+        if (window.ethereum && typeof window.ethereum.request === 'function') {
+          try {
+            await window.ethereum.request({
+              method: 'eth_call',
+              params: [callData, 'latest']
+            });
+            simulationSuccess = true;
+            console.log(`使用window.ethereum模拟交易成功`);
+          } catch (ethErr) {
+            console.warn(`使用window.ethereum模拟交易失败:`, ethErr);
+            throw ethErr; // 继续向上抛出错误
+          }
+        } 
+        // 方法2：使用ethers提供程序
+        else if (intent.contract.provider && typeof intent.contract.provider.call === 'function') {
+          try {
+            await intent.contract.provider.call(callData);
+            simulationSuccess = true;
+            console.log(`使用合约提供程序模拟交易成功`);
+          } catch (providerErr) {
+            console.warn(`使用合约提供程序模拟交易失败:`, providerErr);
+            throw providerErr; // 继续向上抛出错误
+          }
+        }
+        // 方法3：使用游戏的ethConnection
+        else if (df.ethConnection && typeof df.ethConnection.provider?.call === 'function') {
+          try {
+            await df.ethConnection.provider.call(callData);
+            simulationSuccess = true;
+            console.log(`使用df.ethConnection模拟交易成功`);
+          } catch (dfErr) {
+            console.warn(`使用df.ethConnection模拟交易失败:`, dfErr);
+            throw dfErr; // 继续向上抛出错误
+          }
+        }
+        // 方法4：尝试使用合约的callStatic方法
+        else if (intent.contract.callStatic && typeof intent.contract.callStatic[txType] === 'function') {
+          try {
+            await intent.contract.callStatic[txType](...args, overrides || {});
+            simulationSuccess = true;
+            console.log(`使用callStatic模拟交易成功`);
+          } catch (callStaticErr) {
+            console.warn(`使用callStatic模拟交易失败:`, callStaticErr);
+            throw callStaticErr; // 继续向上抛出错误
+          }
+        }
+        
+        if (simulationSuccess) {
+          console.log(`交易 ${txType} 模拟执行成功`);
+        } else {
+          console.warn(`无法使用任何方法模拟交易，将继续尝试执行`);
+        }
+      } catch (simulationErr) {
+        // 模拟执行失败，获取详细错误信息
+        console.error(`交易 ${txType} 模拟执行失败:`, simulationErr);
+        
+        // 检查是否是交易revert
+        const errorMsg = JSON.stringify(simulationErr).toLowerCase();
+        if (errorMsg.includes('revert') || 
+            errorMsg.includes('reverted') || 
+            errorMsg.includes('execution failed') ||
+            errorMsg.includes('execution reverted') ||
+            errorMsg.includes('transaction failed') ||
+            errorMsg.includes('out of gas') ||
+            errorMsg.includes('invalid opcode')) {
+          
+          // 提取更具体的错误原因
+          let revertReason = '未知原因';
+          
+          // 尝试多种方式解析错误信息
+          if (simulationErr.data && typeof simulationErr.data === 'string') {
+            // 检查错误数据中的原因
+            const dataMatch = simulationErr.data.match(/0x08c379a0\w+([0-9a-fA-F]+)/);
+            if (dataMatch && dataMatch[1]) {
+              try {
+                // 将十六进制数据转换为字符串
+                const hexString = dataMatch[1];
+                const stringData = Buffer.from(hexString, 'hex').toString('utf8');
+                if (stringData) revertReason = stringData.replace(/^\0+/, '');
+              } catch (e) {
+                console.warn('解析十六进制错误数据失败:', e);
+              }
+            }
+          }
+          
+          // 检查错误消息中的原因
+          if (revertReason === '未知原因' && simulationErr.message) {
+            // 匹配各种可能的错误信息格式
+            const revertPatterns = [
+              /reverted with reason string ['"](.+?)['"]/i,
+              /execution reverted: (.+?)(?:\s|$)/i,
+              /vm exception [^:]+: revert (.+?)(?:\s|$)/i,
+              /reason: (.+?)(?:,|$)/i,
+              /revert: (.+?)(?:\s|$)/i,
+              /reason=(.+?)(?:,|$)/i
+            ];
+            
+            for (const pattern of revertPatterns) {
+              const match = simulationErr.message.match(pattern);
+              if (match && match[1]) {
+                revertReason = match[1].trim();
+                break;
+              }
+            }
+          }
+          
+          // 检查嵌套错误
+          if (revertReason === '未知原因' && simulationErr.error) {
+            if (typeof simulationErr.error.message === 'string') {
+              // 查找嵌套错误中的原因
+              const nestedMatch = simulationErr.error.message.match(/revert(?:ed)? (?:with|:) (.+?)(?:\s|$)/i);
+              if (nestedMatch && nestedMatch[1]) {
+                revertReason = nestedMatch[1].trim();
+              }
+            }
+            
+            // 检查reason属性
+            if (simulationErr.error.reason) {
+              revertReason = simulationErr.error.reason;
+            }
+          }
+          
+          // 从errorMsg中尝试提取
+          if (revertReason === '未知原因') {
+            const msgMatch = errorMsg.match(/reason: ?['"](.*?)['"],?/i);
+            if (msgMatch && msgMatch[1]) {
+              revertReason = msgMatch[1];
+            } else if (errorMsg.includes('out of gas')) {
+              revertReason = 'Gas不足';
+            } else if (errorMsg.includes('user rejected')) {
+              revertReason = '用户拒绝交易';
+            }
+          }
+          
+          // 使用人类可读的错误描述
+          let humanReadableError = revertReason;
+          for (const pattern in this.errorPatternToMessage) {
+            if (revertReason.toLowerCase().includes(pattern)) {
+              humanReadableError = this.errorPatternToMessage[pattern];
+              break;
+            }
+          }
+          
+          // 最终确定错误原因
+          const reason = `交易可能会失败: ${humanReadableError}`;
+          console.error('预计交易会被拒绝: ' + reason);
+          
+          // 记录失败预测
+          this.recordFailedTransaction(txType, args, null, revertReason);
+          
+          // 记录被拒绝的交易
+          this.rejectedTransactions.unshift({
+            type: txType,
+            estimatedGas: '交易会被拒绝',
+            gasPrice: '未知',
+            timestamp: Date.now(),
+            reason: `交易会被拒绝: ${humanReadableError}`
+          });
+          
+          // 限制数组大小
+          if (this.rejectedTransactions.length > 50) {
+            this.rejectedTransactions.pop();
+          }
+          
+          // 更新UI
+          this.updateUI();
+          
+          // 提示用户
+          this.showNotification(`交易已取消: ${reason}`, 'error', 10000);
+          
+          // 返回拒绝结果
+          return {
+            success: false,
+            rejected: true,
+            reason: `交易被GasLimitChecker插件拒绝: ${reason}`
+          };
+        }
+      }
+      
       // 尝试估算Gas
       let estimatedGas;
       try {
@@ -912,6 +1162,232 @@ class GasLimitChecker {
       }
     } catch (err) {
       console.error('检查Gas设置变化时出错:', err);
+    }
+  }
+
+  /**
+   * 设置交易结果监控
+   * 监控交易完成事件，记录成功和失败的交易模式
+   */
+  setupTransactionMonitoring() {
+    try {
+      if (!window.df || !df.contractsAPI || !df.contractsAPI.txExecutor) {
+        console.warn('无法设置交易监控，txExecutor不可用');
+        return;
+      }
+      
+      // 监听交易完成事件
+      const self = this;
+      
+      // 保存原始的onTransactionResponse方法
+      if (df.contractsAPI.txExecutor.onTransactionResponse) {
+        const originalOnResponse = df.contractsAPI.txExecutor.onTransactionResponse;
+        
+        df.contractsAPI.txExecutor.onTransactionResponse = function(txHash, contractAddress, methodName, args) {
+          // 先调用原始方法
+          const result = originalOnResponse.apply(this, arguments);
+          
+          // 记录交易开始
+          console.log(`交易开始执行: ${methodName}, 哈希: ${txHash}`);
+          
+          // 持续监控此交易直到确认或失败
+          self.monitorTransaction(txHash, methodName, args);
+          
+          return result;
+        };
+      }
+      
+      // 如果df.contractsAPI.txExecutor有onTransactionReceipt方法，覆盖它
+      if (df.contractsAPI.txExecutor.onTransactionReceipt) {
+        const originalOnReceipt = df.contractsAPI.txExecutor.onTransactionReceipt;
+        
+        df.contractsAPI.txExecutor.onTransactionReceipt = function(txHash, contractAddress, methodName, args, receipt) {
+          // 先调用原始方法
+          const result = originalOnReceipt.apply(this, arguments);
+          
+          // 检查交易是否成功
+          if (receipt && receipt.status === 1) {
+            console.log(`交易成功: ${methodName}, 哈希: ${txHash}`);
+            self.recordSuccessfulTransaction(methodName, args, receipt);
+          } else {
+            console.error(`交易失败: ${methodName}, 哈希: ${txHash}`, receipt);
+            self.recordFailedTransaction(methodName, args, receipt, '交易回执状态为失败');
+          }
+          
+          return result;
+        };
+      }
+      
+      console.log('交易监控设置完成');
+    } catch (err) {
+      console.error('设置交易监控失败:', err);
+    }
+  }
+  
+  /**
+   * 监控交易直到完成
+   * @param {string} txHash 交易哈希
+   * @param {string} methodName 方法名
+   * @param {Array} args 参数
+   */
+  async monitorTransaction(txHash, methodName, args) {
+    if (!txHash) return;
+    
+    try {
+      // 获取提供者
+      let provider = null;
+      if (df.ethConnection && df.ethConnection.provider) {
+        provider = df.ethConnection.provider;
+      }
+      
+      if (!provider) {
+        console.warn('无法监控交易，找不到适合的提供者');
+        return;
+      }
+      
+      // 等待交易被挖出
+      try {
+        console.log(`等待交易确认: ${txHash}`);
+        const receipt = await provider.waitForTransaction(txHash, 1); // 等待1个确认
+        
+        if (receipt.status === 1) {
+          console.log(`交易确认成功: ${methodName}, 哈希: ${txHash}`);
+          this.recordSuccessfulTransaction(methodName, args, receipt);
+        } else {
+          console.error(`交易确认失败: ${methodName}, 哈希: ${txHash}`, receipt);
+          this.recordFailedTransaction(methodName, args, receipt, '交易状态为失败');
+        }
+      } catch (error) {
+        console.error(`监控交易时出错: ${txHash}`, error);
+        this.recordFailedTransaction(methodName, args, null, error.message || '未知错误');
+      }
+    } catch (err) {
+      console.error('监控交易过程中出错:', err);
+    }
+  }
+  
+  /**
+   * 记录成功的交易
+   * @param {string} methodName 方法名
+   * @param {Array} args 参数
+   * @param {Object} receipt 交易回执
+   */
+  recordSuccessfulTransaction(methodName, args, receipt) {
+    try {
+      // 初始化成功记录
+      if (!this.transactionHistory.successfulTxs[methodName]) {
+        this.transactionHistory.successfulTxs[methodName] = {
+          count: 0,
+          lastSuccess: 0,
+          avgGasUsed: 0
+        };
+      }
+      
+      // 更新成功计数和时间
+      const record = this.transactionHistory.successfulTxs[methodName];
+      record.count++;
+      record.lastSuccess = Date.now();
+      
+      // 如果有Gas使用量，更新平均值
+      if (receipt && receipt.gasUsed) {
+        const gasUsed = parseInt(receipt.gasUsed.toString(), 10);
+        record.avgGasUsed = ((record.avgGasUsed * (record.count - 1)) + gasUsed) / record.count;
+        console.log(`更新 ${methodName} 的平均Gas使用量: ${record.avgGasUsed}`);
+        
+        // 更新自定义的Gas倍率
+        const safetyMultiplier = Math.max(1.1, gasUsed / record.avgGasUsed * 1.05); // 5%的额外边际
+        this.gasEstimateMultipliers[methodName] = safetyMultiplier;
+      }
+    } catch (err) {
+      console.error('记录成功交易时出错:', err);
+    }
+  }
+  
+  /**
+   * 记录失败的交易
+   * @param {string} methodName 方法名
+   * @param {Array} args 参数
+   * @param {Object} receipt 交易回执
+   * @param {string} errorReason 错误原因
+   */
+  recordFailedTransaction(methodName, args, receipt, errorReason) {
+    try {
+      // 初始化失败记录
+      if (!this.transactionHistory.failedTxs[methodName]) {
+        this.transactionHistory.failedTxs[methodName] = {
+          count: 0,
+          lastFailure: 0,
+          reasons: {}
+        };
+      }
+      
+      // 更新失败计数和时间
+      const record = this.transactionHistory.failedTxs[methodName];
+      record.count++;
+      record.lastFailure = Date.now();
+      
+      // 记录具体错误原因
+      const reasonKey = errorReason || '未知原因';
+      if (!record.reasons[reasonKey]) {
+        record.reasons[reasonKey] = 0;
+      }
+      record.reasons[reasonKey]++;
+      
+      // 更新失败模式
+      if (!this.transactionHistory.revertPatterns[methodName]) {
+        this.transactionHistory.revertPatterns[methodName] = {};
+      }
+      
+      // 尝试找到更易读的错误描述
+      let humanReadableError = reasonKey;
+      for (const pattern in this.errorPatternToMessage) {
+        if (reasonKey.toLowerCase().includes(pattern)) {
+          humanReadableError = this.errorPatternToMessage[pattern];
+          break;
+        }
+      }
+      
+      // 记录这种操作的常见失败原因
+      const revertPattern = this.transactionHistory.revertPatterns[methodName];
+      if (!revertPattern[humanReadableError]) {
+        revertPattern[humanReadableError] = 0;
+      }
+      revertPattern[humanReadableError]++;
+      
+      console.log(`记录 ${methodName} 的失败原因: ${humanReadableError}`);
+    } catch (err) {
+      console.error('记录失败交易时出错:', err);
+    }
+  }
+  
+  /**
+   * 获取方法的历史失败原因
+   * @param {string} methodName 方法名
+   * @returns {string} 最常见的失败原因
+   */
+  getMostCommonFailureReason(methodName) {
+    try {
+      // 检查是否有这个方法的历史失败记录
+      if (!this.transactionHistory.revertPatterns[methodName]) {
+        return null;
+      }
+      
+      // 找出最常见的失败原因
+      const reasons = this.transactionHistory.revertPatterns[methodName];
+      let maxCount = 0;
+      let mostCommonReason = null;
+      
+      for (const reason in reasons) {
+        if (reasons[reason] > maxCount) {
+          maxCount = reasons[reason];
+          mostCommonReason = reason;
+        }
+      }
+      
+      return mostCommonReason;
+    } catch (err) {
+      console.error('获取失败原因时出错:', err);
+      return null;
     }
   }
 
