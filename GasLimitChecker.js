@@ -25,6 +25,43 @@ class GasLimitChecker {
       // 示例：move: 1000000, // 移动操作最大gas限制
       // upgrade: 1500000, // 升级操作最大gas限制
     };
+    
+    // 添加交易类型到预估Gas倍率的映射
+    this.gasEstimateMultipliers = {
+      // 不同操作可能需要不同的安全系数
+      move: 1.1,      // 移动操作
+      upgrade: 1.2,   // 升级操作
+      buyHat: 1.1,    // 购买帽子
+      transferOwnership: 1.2, // 转移所有权
+      withdrawSilver: 1.1,  // 提取银币
+      default: 1.15   // 默认倍率
+    };
+    
+    // 只读操作列表（不需要进行Gas检查）
+    this.readOnlyMethods = [
+      // 常见的只读方法前缀
+      'get',
+      'view',
+      'read',
+      'query',
+      'check',
+      'is',
+      'has',
+      'calculate',
+      'compute',
+      'estimate',
+      // 特定的只读方法名
+      'getBalance',
+      'getMetadata',
+      'getPlayerInfo',
+      'getContractConstants',
+      'getPlanetById',
+      'getArtifactById',
+      'getRevealedPlanets',
+      'getRevealedCoordinates',
+      'getPlanetsByIds',
+      'getPlayerById'
+    ];
   }
 
   /**
@@ -332,79 +369,26 @@ class GasLimitChecker {
         try {
           // 获取交易类型
           const txType = intent.methodName;
+          console.log(`准备执行交易: ${txType}`);
           
-          // 估算gas费用（使用ethers.js的estimateGas方法）
-          let estimatedGas;
-          const args = await intent.args;
-          
-          try {
-            // 调用合约的estimateGas方法估算gas
-            estimatedGas = await intent.contract.estimateGas[intent.methodName](...args, overrides || {});
-            estimatedGas = parseInt(estimatedGas.toString(), 10);
-          } catch (err) {
-            console.warn('Gas估算失败:', err);
-            
-            // 检查是否因为Gas价格过低导致估算失败
-            const errorStr = JSON.stringify(err).toLowerCase();
-            console.log('错误信息完整字符串:', errorStr);
-            
-            // 尝试深入获取错误信息
-            let detailedError = '';
-            if (err.error) detailedError += JSON.stringify(err.error).toLowerCase();
-            if (err.message) detailedError += ' ' + err.message.toLowerCase();
-            if (err.data) detailedError += ' ' + JSON.stringify(err.data).toLowerCase();
-            if (err.reason) detailedError += ' ' + err.reason.toLowerCase();
-            if (err.details) detailedError += ' ' + err.details.toLowerCase();
-            
-            console.log('详细错误信息:', detailedError);
-            
-            const combinedErrorStr = (errorStr + ' ' + detailedError).toLowerCase();
-            
-            // 扩展错误匹配模式
-            if (combinedErrorStr.includes('maxfeepergas too low') || 
-                combinedErrorStr.includes('gas price too low') || 
-                combinedErrorStr.includes('gas fee too low') ||
-                combinedErrorStr.includes('max fee per gas too low') ||
-                combinedErrorStr.includes('maxfeepergas too low to be include') ||
-                combinedErrorStr.includes('underpriced') ||
-                combinedErrorStr.includes('fee too low') ||
-                combinedErrorStr.includes('gas too low') ||
-                combinedErrorStr.includes('基础费用太低') ||
-                combinedErrorStr.includes('低于允许的最小值') ||
-                combinedErrorStr.includes('below minimum') ||
-                combinedErrorStr.includes('insufficient funds') ||
-                combinedErrorStr.includes('低于最小gas价格')) {
-              
-              const reason = 'Gas价格太低，无法被网络接受，请在游戏中提高Gas价格设置';
-              console.error('交易被拒绝: ' + reason, err);
-              
-              // 记录被拒绝的交易
-              this.rejectedTransactions.unshift({
-                type: txType,
-                estimatedGas: '未知',
-                gasPrice: '过低',
-                timestamp: Date.now(),
-                reason: 'Gas价格过低'
-              });
-              
-              // 限制数组大小
-              if (this.rejectedTransactions.length > 50) {
-                this.rejectedTransactions.pop();
-              }
-              
-              // 更新UI
-              this.updateUI();
-              
-              // 提示用户
-              this.showNotification(`交易已取消: ${reason}`, 'error', 10000);
-              
-              // 返回一个被拒绝的Promise
-              return Promise.reject(new Error(`交易被GasLimitChecker插件拒绝: ${reason}`));
-            }
-            
-            // 估算失败时使用默认的gasLimit
-            estimatedGas = this.defaultMaxGasLimit;
+          // 检查是否为只读操作
+          const isReadOnly = await this.isReadOnlyTransaction(intent);
+          if (isReadOnly) {
+            console.log(`${txType} 被识别为只读操作，跳过Gas检查`);
+            return originalQueueTransaction(intent, overrides);
           }
+          
+          // 使用更准确的方法估算Gas
+          const gasEstimationResult = await this.estimateTransactionGas(intent, overrides, txType);
+          
+          // 如果估算被拒绝，直接返回拒绝结果
+          if (gasEstimationResult.rejected) {
+            return Promise.reject(new Error(gasEstimationResult.reason));
+          }
+          
+          // 获取估算的Gas值
+          const estimatedGas = gasEstimationResult.estimatedGas;
+          console.log(`交易${txType}的估算Gas: ${estimatedGas}`);
           
           // 获取当前gas价格（gwei）
           const autoGasPriceSetting = df.contractsAPI.getGasFeeForTransaction({ intent });
@@ -513,6 +497,255 @@ class GasLimitChecker {
     } catch (err) {
       console.error('设置交易拦截器失败:', err);
       this.showNotification('设置交易拦截器失败，请查看控制台', 'error', 5000);
+    }
+  }
+
+  /**
+   * 判断操作是否为只读操作
+   * @param {string} methodName 方法名
+   * @returns {boolean} 是否为只读操作
+   */
+  isReadOnlyOperation(methodName) {
+    if (!methodName) return false;
+    
+    const lowerMethodName = methodName.toLowerCase();
+    
+    // 直接匹配完整方法名
+    if (this.readOnlyMethods.includes(lowerMethodName)) {
+      return true;
+    }
+    
+    // 检查是否以只读前缀开头
+    for (const prefix of ['get', 'view', 'read', 'query', 'check', 'is', 'has', 'calculate', 'compute', 'estimate']) {
+      if (lowerMethodName.startsWith(prefix)) {
+        return true;
+      }
+    }
+    
+    // 特定的游戏只读操作
+    const gameReadOnlyOperations = [
+      'refreshPlanet',
+      'findArtifact',
+      'getRefreshWindow',
+      'getContractConstants',
+      'getUpgrades',
+      'getGameObjects',
+      'locationIdToCoords',
+      'getWorldRadius',
+      'getWorldSilver',
+      'getVerifiedContracts',
+      'getSilverMines',
+      'getWhitelistedPlayers',
+      'getLeaderboard',
+      'getRank'
+    ];
+    
+    if (gameReadOnlyOperations.includes(lowerMethodName)) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * 更详细地检查交易是否为只读操作
+   * @param {Object} intent 交易意图对象
+   * @returns {Promise<boolean>} 是否为只读操作
+   */
+  async isReadOnlyTransaction(intent) {
+    try {
+      // 1. 检查方法名
+      if (this.isReadOnlyOperation(intent.methodName)) {
+        return true;
+      }
+      
+      // 2. 检查合约接口中的函数状态可变性
+      try {
+        const fragment = intent.contract.interface.getFunction(intent.methodName);
+        if (fragment && (fragment.stateMutability === 'view' || fragment.stateMutability === 'pure')) {
+          return true;
+        }
+      } catch (err) {
+        // 无法从合约接口获取信息
+      }
+      
+      // 3. 检查是否有其他明确的只读标记
+      if (intent.isView === true || intent.isPure === true || intent.isReadOnly === true) {
+        return true;
+      }
+      
+      // 4. 检查调用方式
+      if (intent.functionFragment && intent.functionFragment.constant) {
+        return true;
+      }
+      
+      // 5. 检查覆盖参数
+      if (intent.overrides && intent.overrides.from === undefined) {
+        // 没有发送者地址可能暗示是只读调用
+        return true;
+      }
+      
+      return false;
+    } catch (err) {
+      console.warn('检查只读交易时出错:', err);
+      // 出错时保守返回false，进行Gas检查
+      return false;
+    }
+  }
+
+  /**
+   * 更准确地估算交易Gas费用
+   * @param {Object} intent 交易意图
+   * @param {Object} overrides 覆盖参数
+   * @param {string} txType 交易类型
+   * @returns {Object} 估算结果
+   */
+  async estimateTransactionGas(intent, overrides, txType) {
+    try {
+      // 获取交易参数
+      const args = await intent.args;
+      
+      // 尝试估算Gas
+      let estimatedGas;
+      try {
+        // 调用合约的estimateGas方法估算gas
+        estimatedGas = await intent.contract.estimateGas[intent.methodName](...args, overrides || {});
+        estimatedGas = parseInt(estimatedGas.toString(), 10);
+        
+        // 获取该交易类型的安全系数
+        const safetyMultiplier = this.gasEstimateMultipliers[txType] || this.gasEstimateMultipliers.default;
+        
+        // 添加安全系数，实际执行可能比估算值高
+        estimatedGas = Math.ceil(estimatedGas * safetyMultiplier);
+        console.log(`Gas估算成功: ${estimatedGas} (已增加${(safetyMultiplier - 1) * 100}%安全边际)`);
+        
+        // 返回成功的估算结果
+        return {
+          success: true,
+          estimatedGas,
+          rejected: false
+        };
+      } catch (err) {
+        console.warn('Gas估算失败:', err);
+        
+        // 检查错误信息
+        const errorStr = JSON.stringify(err).toLowerCase();
+        
+        // 尝试深入获取错误信息
+        let detailedError = '';
+        if (err.error) detailedError += JSON.stringify(err.error).toLowerCase();
+        if (err.message) detailedError += ' ' + err.message.toLowerCase();
+        if (err.data) detailedError += ' ' + JSON.stringify(err.data).toLowerCase();
+        if (err.reason) detailedError += ' ' + err.reason.toLowerCase();
+        if (err.details) detailedError += ' ' + err.details.toLowerCase();
+        
+        const combinedErrorStr = (errorStr + ' ' + detailedError).toLowerCase();
+        
+        // 检查是否因为Gas价格过低导致估算失败
+        if (combinedErrorStr.includes('maxfeepergas too low') || 
+            combinedErrorStr.includes('gas price too low') || 
+            combinedErrorStr.includes('gas fee too low') ||
+            combinedErrorStr.includes('max fee per gas too low') ||
+            combinedErrorStr.includes('maxfeepergas too low to be include') ||
+            combinedErrorStr.includes('underpriced') ||
+            combinedErrorStr.includes('fee too low') ||
+            combinedErrorStr.includes('gas too low') ||
+            combinedErrorStr.includes('基础费用太低') ||
+            combinedErrorStr.includes('低于允许的最小值') ||
+            combinedErrorStr.includes('below minimum') ||
+            combinedErrorStr.includes('insufficient funds') ||
+            combinedErrorStr.includes('低于最小gas价格')) {
+          
+          const reason = 'Gas价格太低，无法被网络接受，请在游戏中提高Gas价格设置';
+          console.error('交易被拒绝: ' + reason, err);
+          
+          // 记录被拒绝的交易
+          this.rejectedTransactions.unshift({
+            type: txType,
+            estimatedGas: '未知',
+            gasPrice: '过低',
+            timestamp: Date.now(),
+            reason: 'Gas价格过低'
+          });
+          
+          // 限制数组大小
+          if (this.rejectedTransactions.length > 50) {
+            this.rejectedTransactions.pop();
+          }
+          
+          // 更新UI
+          this.updateUI();
+          
+          // 提示用户
+          this.showNotification(`交易已取消: ${reason}`, 'error', 10000);
+          
+          // 返回拒绝结果
+          return {
+            success: false,
+            rejected: true,
+            reason: `交易被GasLimitChecker插件拒绝: ${reason}`
+          };
+        }
+        
+        // 检查是否因为Gas Limit不足导致估算失败
+        if (combinedErrorStr.includes('gas limit') || 
+            combinedErrorStr.includes('out of gas') || 
+            combinedErrorStr.includes('exceeds gas limit') ||
+            combinedErrorStr.includes('exceeds block gas limit') ||
+            combinedErrorStr.includes('gas不足') ||
+            combinedErrorStr.includes('gas不够') ||
+            combinedErrorStr.includes('超出gas限制')) {
+          
+          const reason = 'Gas限制不足，交易可能会失败，请在游戏中提高Gas限制设置';
+          console.error('交易被拒绝: ' + reason, err);
+          
+          // 记录被拒绝的交易
+          this.rejectedTransactions.unshift({
+            type: txType,
+            estimatedGas: '超出限制',
+            gasPrice: '未知',
+            timestamp: Date.now(),
+            reason: 'Gas限制不足'
+          });
+          
+          // 限制数组大小
+          if (this.rejectedTransactions.length > 50) {
+            this.rejectedTransactions.pop();
+          }
+          
+          // 更新UI
+          this.updateUI();
+          
+          // 提示用户
+          this.showNotification(`交易已取消: ${reason}`, 'error', 10000);
+          
+          // 返回拒绝结果
+          return {
+            success: false,
+            rejected: true,
+            reason: `交易被GasLimitChecker插件拒绝: ${reason}`
+          };
+        }
+        
+        // 估算失败但不是因为上述原因，使用一个保守的估算值
+        const conservativeEstimate = Math.max(this.defaultMaxGasLimit, 3000000);
+        console.warn(`Gas估算失败，使用保守估算值: ${conservativeEstimate}`);
+        
+        return {
+          success: false,
+          estimatedGas: conservativeEstimate,
+          rejected: false
+        };
+      }
+    } catch (err) {
+      console.error('估算交易Gas失败:', err);
+      
+      // 出错时使用一个保守的估算值
+      return {
+        success: false,
+        estimatedGas: Math.max(this.defaultMaxGasLimit, 3000000),
+        rejected: false
+      };
     }
   }
 
